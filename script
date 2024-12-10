@@ -1,0 +1,276 @@
+Set-ExecutionPolicy RemoteSigned
+
+# Fonction pour récupérer les informations sur le PC et les enregistrer dans un fichier texte  
+function Get-SystemInfo {
+    $SystemInfo = @()
+    $SystemInfo += "Récupération des informations système : `n"
+
+    # Récupérer le nom du PC et les informations sur le système d'exploitation  
+    $OSInfo = Get-WmiObject Win32_OperatingSystem | Select-Object Caption, Version, OSArchitecture  
+    $ComputerInfo = Get-ComputerInfo | Select-Object CsName, WindowsVersion, WindowsBuildLabEx
+
+    $SystemInfo += "`nSystème d'Exploitation :"
+    $SystemInfo += "Nom du PC          : $($ComputerInfo.CsName)"
+    $SystemInfo += "Nom de l'OS       : $($OSInfo.Caption)"
+    $SystemInfo += "Version de Windows : $($ComputerInfo.WindowsVersion)"
+    $SystemInfo += "Build de Windows   : $($ComputerInfo.WindowsBuildLabEx)"
+    $SystemInfo += "Version de l'OS    : $($OSInfo.Version)"
+    $SystemInfo += "Architecture       : $($OSInfo.OSArchitecture)"
+
+    # Récupérer le numéro de série du PC  
+    $SerialNumber = (Get-WmiObject -Class Win32_BIOS).SerialNumber  
+    $SystemInfo += "Numéro de Série     : $SerialNumber"  # Ajout du numéro de série
+
+    # Récupérer l'état de l'antivirus  
+    $Antivirus = Get-CimInstance -Namespace "root/SecurityCenter2" -ClassName AntiVirusProduct  
+    $SystemInfo += "`nAntivirus :"
+    foreach ($av in $Antivirus) {
+        $SystemInfo += "Nom          : $($av.displayName)"
+        $SystemInfo += "État         : $($av.productState)"
+    }
+
+    # Récupérer l'état du pare-feu Windows  
+    $FirewallStatus = Get-NetFirewallProfile -All  
+    $SystemInfo += "`nPare-feu Windows :"
+    foreach ($profile in $FirewallStatus) {
+        $SystemInfo += "Profil       : $($profile.Name)"
+        $SystemInfo += "Activé        : $($profile.Enabled)"
+    }
+
+    # Récupérer les comptes utilisateurs présents sur le PC  
+    $Users = Get-WmiObject Win32_UserAccount | Select-Object Name, FullName, Status  
+
+    # Récupérer les utilisateurs administrateurs  
+    $AdminUsers = Get-WmiObject -Class Win32_GroupUser | Where-Object { $_.GroupComponent -like '*Administrators*' }
+    $AdminUserNames = $AdminUsers | ForEach-Object { ($_ -split '=')[1].Trim() }
+
+    $SystemInfo += "`n==================== Section Comptes ===================="
+
+    foreach ($user in $Users) {
+        $isAdmin = if ($AdminUserNames -contains $user.Name) { "Oui" } else { "Non" }
+        $SystemInfo += "Nom          : $($user.Name)"
+        $SystemInfo += "Nom Complet  : $($user.FullName)"
+        $SystemInfo += "Statut       : $($user.Status)"
+        $SystemInfo += "Administrateur : $isAdmin`n"
+    }
+
+    # Récupérer les informations sur les disques durs et leur utilisation  
+    $Disks = Get-WmiObject Win32_DiskDrive | Select-Object Model, Manufacturer, Size, MediaType, SerialNumber, Status  
+    $LogicalDisks = Get-WmiObject Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, VolumeName, Size, FreeSpace  
+
+    $SystemInfo += "`n==================== Disques Durs et Utilisation ===================="
+
+    foreach ($disk in $Disks) {
+        $DiskSizeGB = [math]::round($disk.Size / 1GB, 2)
+
+        # Informations sur le disque dur  
+        $SystemInfo += "`nModèle       : $($disk.Model)"
+        $SystemInfo += "Marque       : $($disk.Manufacturer)"
+        $SystemInfo += "Capacité     : $DiskSizeGB Go"
+        $SystemInfo += "Type         : $($disk.MediaType)"
+        $SystemInfo += "Numéro de Série : $($disk.SerialNumber)"
+        $SystemInfo += "État SMART   : $($disk.Status)"
+    }
+
+    # Informations sur l'utilisation des disques logiques  
+    $SystemInfo += "`nUtilisation des Disques Logiques :"
+    foreach ($logicalDisk in $LogicalDisks) {
+        $FreeSpaceGB = [math]::round($logicalDisk.FreeSpace / 1GB, 2)
+        $TotalSizeGB = [math]::round($logicalDisk.Size / 1GB, 2)
+        $UsedSpaceGB = $TotalSizeGB - $FreeSpaceGB  
+        $UsedPercentage = [math]::round(($UsedSpaceGB / $TotalSizeGB) * 100, 2)
+        $FreePercentage = [math]::round(($FreeSpaceGB / $TotalSizeGB) * 100, 2)
+
+        $SystemInfo += "`nLecteur      : $($logicalDisk.DeviceID)"
+        $SystemInfo += "Nom Volume   : $($logicalDisk.VolumeName)"
+        $SystemInfo += "Capacité Totale : $TotalSizeGB Go"
+        $SystemInfo += "Espace Utilisé : $UsedSpaceGB Go ($UsedPercentage %)"
+        $SystemInfo += "Espace Libre : $FreeSpaceGB Go ($FreePercentage %)"
+
+        # Vérification de l'espace libre et ajout des notifications  
+        if ($FreePercentage -lt 20) {
+            $SystemInfo += "Statut : Espace saturé"
+        } elseif ($FreePercentage -ge 20 -and $FreePercentage -lt 30) {
+            $SystemInfo += "Statut : Attention espace bientôt saturé"
+        } else {
+            $SystemInfo += "Statut : Espace OK"
+        }
+    }
+
+    # Récupérer les informations sur le matériel  
+    $SystemInfo += "`n==================== Section Materiels ===================="
+
+    # Récupérer les informations sur le processeur  
+    $Processor = Get-WmiObject Win32_Processor | Select-Object Name, Manufacturer, MaxClockSpeed, NumberOfCores, NumberOfLogicalProcessors  
+    $SystemInfo += "`nProcesseur :"
+    $SystemInfo += "Nom          : $($Processor.Name)"
+    $SystemInfo += "Marque       : $($Processor.Manufacturer)"
+    $SystemInfo += "Fréquence Max: $($Processor.MaxClockSpeed) MHz"
+    $SystemInfo += "Nombre de Cœurs : $($Processor.NumberOfCores)"
+    $SystemInfo += "Nombre de Threads : $($Processor.NumberOfLogicalProcessors)"
+
+    # Récupérer des informations sur l'alimentation  
+    $PowerStatus = Get-WmiObject Win32_Battery  
+    if ($PowerStatus) {
+        $SystemInfo += "`nÉtat de la Batterie :"
+        $SystemInfo += "Capacité restante : $([math]::round($PowerStatus.EstimatedChargeRemaining, 2)) %"
+        $SystemInfo += "Temps restant (estimation) : $($PowerStatus.EstimatedRunTime) minutes"
+    }
+
+    # Récupérer les informations sur la mémoire (RAM)
+    $Memory = Get-WmiObject Win32_PhysicalMemory | Select-Object Manufacturer, Capacity, Speed  
+    $SystemInfo += "`nMémoire RAM :"
+    foreach ($mem in $Memory) {
+        $RamSizeGB = [math]::round($mem.Capacity / 1GB, 2)
+        $RamSpeed = $mem.Speed  
+        $SystemInfo += "Marque       : $($mem.Manufacturer)"
+        $SystemInfo += "Capacité     : $RamSizeGB Go"
+        $SystemInfo += "Fréquence    : $RamSpeed MHz"
+    }
+
+    # Récupérer les informations sur la carte graphique  
+    $GPU = Get-WmiObject Win32_VideoController | Select-Object Name, AdapterRAM, DriverVersion  
+    $SystemInfo += "`nCarte Graphique :"
+    foreach ($gpu in $GPU) {
+        $GpuRamGB = [math]::round($gpu.AdapterRAM / 1GB, 2)
+        $SystemInfo += "Nom          : $($gpu.Name)"
+        $SystemInfo += "Mémoire      : $GpuRamGB Go"
+        $SystemInfo += "Version du Pilote : $($gpu.DriverVersion)"
+    }
+
+    # Informations sur la carte mère  
+    $Motherboard = Get-WmiObject Win32_BaseBoard | Select-Object Manufacturer, Product, SerialNumber  
+    $SystemInfo += "`nCarte Mère :"
+    $SystemInfo += "Marque       : $($Motherboard.Manufacturer)"
+    $SystemInfo += "Modèle       : $($Motherboard.Product)"
+    $SystemInfo += "Numéro de Série : $($Motherboard.SerialNumber)"
+
+    # Récupérer les informations sur les imprimantes  
+    try {
+        $Printers = Get-WmiObject -Class Win32_Printer | Select-Object Name, Manufacturer, DriverName, PortName, Location, Status
+
+        $SystemInfo += "`n==================== Imprimantes Installées ===================="
+
+        if ($Printers.Count -gt 0) {
+            foreach ($printer in $Printers) {
+                $SystemInfo += "Nom de l'Imprimante : $($printer.Name)"
+                $SystemInfo += "Fabricant          : $($printer.Manufacturer)"
+                $SystemInfo += "Nom du Pilote      : $($printer.DriverName)"
+                $SystemInfo += "Port               : $($printer.PortName)"
+                $SystemInfo += "Emplacement        : $($printer.Location)"
+                $SystemInfo += "Statut             : $($printer.Status)"
+
+                # Récupérer la signature du pilote  
+                $driver = Get-WmiObject Win32_PrinterDriver | Where-Object { $_.Name -eq $printer.DriverName }
+                if ($driver) {
+                    $SystemInfo += "Signature du Pilote : $($driver.Signed)"
+                } else {
+                    $SystemInfo += "Signature du Pilote : Non trouvée"
+                }
+
+                $SystemInfo += ""  # Ligne vide pour séparer les imprimantes  
+            }
+        } else {
+            $SystemInfo += "Aucune imprimante installée trouvée."
+        }
+    } catch {
+        $SystemInfo += "Erreur lors de la récupération des imprimantes installées : $_"
+    }
+
+    $SystemInfo += "`n==================== Section Réseaux ===================="
+
+    # Configuration réseau (ipconfig /all)
+    $NetworkConfig = ipconfig /allcompartments /all  
+    $SystemInfo += $NetworkConfig -join "`n"
+
+    # Effectuer un ping pour vérifier la connectivité réseau  
+    $PingResult = Test-Connection -ComputerName google.com -Count 4 -ErrorAction SilentlyContinue  
+    $SystemInfo += "`nPing Google :"
+    if ($PingResult) {
+        $SystemInfo += "Statut       : Réussi"
+        foreach ($ping in $PingResult) {
+            $SystemInfo += "Adresse IP   : $($ping.Address.IPAddressToString)"
+            $SystemInfo += "Temps (ms)   : $($ping.ResponseTime)"
+        }
+    } else {
+        $SystemInfo += "Statut       : Échec"
+    }
+
+    # Effectuer un tracert vers Google  
+    $TracertResult = tracert google.com  
+    $SystemInfo += "`nTraceroute vers Google :"
+    $SystemInfo += $TracertResult -join "`n"
+
+    # Récupérer les informations sur les adaptateurs réseau  
+    $NetworkAdapters = Get-NetAdapter | Select-Object Name, Status, MacAddress, LinkSpeed, Virtual  
+    $IpAddresses = Get-NetIPAddress | Select-Object InterfaceAlias, IPAddress, PrefixLength, AddressFamily  
+    $RoutingTable = Get-NetRoute | Select-Object DestinationPrefix, NextHop, InterfaceAlias, Metric
+
+    # Ajouter les informations réseau à la fin  
+    $SystemInfo += "`n==================== Adaptateurs Réseau ===================="
+    $NetworkAdapters | ForEach-Object { 
+        $SystemInfo += "Nom          : $($_.Name)"
+        $SystemInfo += "Statut       : $($_.Status)"
+        $SystemInfo += "Adresse MAC  : $($_.MacAddress)"
+        $SystemInfo += "Vitesse      : $($_.LinkSpeed)"
+        $SystemInfo += "Virtuel      : $($_.Virtual)`n"
+    }
+
+    # Récupérer la table de routage  
+    $RoutingTable = Get-NetRoute | Select-Object DestinationPrefix, NextHop, InterfaceAlias, Metric
+
+    # Regrouper les routes par InterfaceAlias  
+    $GroupedRoutes = $RoutingTable | Group-Object InterfaceAlias
+
+    $SystemInfo += "`n==================== Table de Routage ===================="
+
+    # En-têtes du tableau  
+    $Header = "Interface", "Destination", "Passerelle", "Métrique"
+    $SystemInfo += ("{0,-30} {1,-40} {2,-40} {3,-10}" -f $Header[0], $Header[1], $Header[2], $Header[3])  # Alignement des en-têtes
+
+    foreach ($group in $GroupedRoutes) {
+        $interfaceName = $group.Name
+        
+        foreach ($route in $group.Group) {
+            $SystemInfo += ("{0,-30} {1,-40} {2,-40} {3,-10}" -f $interfaceName, $route.DestinationPrefix, $route.NextHop, $route.Metric)
+        }
+        
+        $SystemInfo += ""  # Ligne vide pour séparer les groupes  
+    }
+
+    # Séparateur entre les processus de démarrage et les applications installées  
+    $SystemInfo += "`n==================== Applications ===================="
+    # Récupérer les processus au démarrage  
+    $StartupProcesses = Get-CimInstance -ClassName Win32_StartupCommand | Select-Object Name, Command, Location  
+    $SystemInfo += "`nProcessus au Démarrage :"
+    foreach ($process in $StartupProcesses) {
+        $SystemInfo += "Nom          : $($process.Name)"
+        $SystemInfo += "Commande     : $($process.Command)"
+        $SystemInfo += "Emplacement  : $($process.Location)"
+    }
+    
+    # Récupérer les applications installées  
+    $InstalledApps = Get-WmiObject -Class Win32_Product | Select-Object Name, Version  
+
+    # Ajouter un en-tête pour la section des applications installées  
+    $SystemInfo += "`n==================== Applications Installées ====================`n"
+    $SystemInfo += "{0,-40} {1,-20}" -f "Nom de l'Application", "Version"  # En-tête du tableau  
+    $SystemInfo += "---------------------------------------------------------------"  # Ligne de séparation
+
+    foreach ($app in $InstalledApps) {
+        $SystemInfo += "{0,-40} {1,-20}" -f $($app.Name), $($app.Version)  # Formatage aligné  
+        $SystemInfo += ""  # Ligne vide pour séparer les applications  
+    }
+
+    # Vérification si aucune application n'est trouvée  
+    if ($InstalledApps.Count -eq 0) {
+        $SystemInfo += "Aucune application installée trouvée."
+    }
+
+    # Retourner les informations sous forme d'une chaîne  
+    return ($SystemInfo -join "`n")
+}
+
+# Appel de la fonction pour récupérer les infos du PC et les sauvegarder dans un fichier texte  
+$SystemInfo = Get-SystemInfo  
+$SystemInfo | Out-File -FilePath "C:\InfoMachine.txt"
